@@ -17,8 +17,8 @@ def get_args():
     parser.add_argument('--epochs', type=int, default = 500, help='Number of epochs')
     parser.add_argument("--emb_dim", type=int, default=16,help="number of hidden gnn units")
     parser.add_argument("--n_layers", type=int, default=2,help="number of hidden gnn layers")
-    parser.add_argument("--gpu", type=int, default=0,help="GPU id, -1 means using CPU")
     parser.add_argument("--weight_decay", type=float, default=5e-4,help="Weight for L2 loss")
+
 
     try:
         args = parser.parse_args()
@@ -47,7 +47,7 @@ class hetero_conv(nn.Module):
         self.hconv_layers.append(self.build_hconv(hid_feats,hid_feats)) # activation None
 
         self.fc1 = nn.Linear(hid_feats*2, hid_feats)
-        self.fc2 = nn.Linear(hid_feats, 10)
+        self.fc2 = nn.Linear(hid_feats, 1)
     
     def build_hconv(self,in_feats,out_feats,activation=None):
         GNN_dict = {}
@@ -76,26 +76,10 @@ class hetero_conv(nn.Module):
         h = self.fc1(h)
         h = self.act(h)
         h = self.fc2(h)
-        h = h.sigmoid()
         return h
-
-@torch.no_grad()
-def int2dec_bits(x, bits=10): 
-    inp = x.repeat(10,1).transpose(0,1)
-    div = torch.cat([torch.ones((x.shape[0],1))*10**(bits-1-i) for i in range(bits)],1)
-    return ((inp/div).int()%10).float()
-
-@torch.no_grad()
-def dec_bits2int(x, bits=10): 
-    div = torch.cat([torch.ones((x.shape[0],1))*10**(bits-1-i) for i in range(bits)],1)
-    return (x*div).sum(1)
+    
 
 def train(args, g):
-    if args.gpu < 0:
-        device = torch.device('cpu')
-    else:
-        device = torch.device('cuda:%d' % args.gpu)
-
     if args.dataset == 'B':
         dim_nfeat = args.emb_dim*2 
         for ntype in g.ntypes:
@@ -108,7 +92,8 @@ def train(args, g):
     optimizer = torch.optim.AdamW(model.parameters(),
                                  lr=args.lr,
                                  weight_decay=args.weight_decay)
-    loss_fcn = nn.BCELoss()  
+    #loss_fcn = nn.BCEWithLogitsLoss()  
+    loss_fcn = nn.SmoothL1Loss() 
     loss_values = []
 
     for i in range(args.epochs):
@@ -121,8 +106,8 @@ def train(args, g):
             if etype.split('_')[-1] == 'reversed':
                 continue
             emb_cat = model.emb_concat(g, etype)
-            time_pred = model.time_predict(emb_cat)
-            time_GT = int2dec_bits(g.edges[etype].data['ts'].int())*0.1
+            time_pred = model.time_predict(emb_cat).squeeze()
+            time_GT = g.edges[etype].data['ts']
             loss += loss_fcn(time_pred, time_GT)
                 
         loss_values.append(loss.item())
@@ -153,7 +138,19 @@ def preprocess(args, directed_g):
             g.edges[etype].data['ts'] = directed_g.edges[etype.split('_')[0]].data['ts']
             if 'feat' in directed_g.edges[etype.split('_')[0]].data.keys():
                 g.edges[etype].data['feat'] = directed_g.edges[etype.split('_')[0]].data['feat']
-    return g
+
+    def timestamp_normlization(g):
+        time_min, time_max = [], []
+        for etype in g.etypes:
+            time_min.append(g.edges[etype].data['ts'].min().item())
+            time_max.append(g.edges[etype].data['ts'].max().item())
+        args.time_min = np.min(time_min).item()
+        args.time_max = np.max(time_max).item()
+        for etype in g.etypes:
+            g.edges[etype].data['ts'] = (g.edges[etype].data['ts'] - args.time_min) / (args.time_max - args.time_min)
+        return g
+
+    return timestamp_normlization(g)
 
 @torch.no_grad()
 def test(args, g, model):
@@ -163,15 +160,15 @@ def test(args, g, model):
     label = test_csv.exist.values
     src = test_csv.src.values
     dst = test_csv.dst.values
-    start_at = test_csv.start_at.values
-    end_at = test_csv.end_at.values
+    start_at = torch.tensor(test_csv.start_at.values)
+    end_at = torch.tensor(test_csv.end_at.values)
     if args.dataset == 'A':
         emb_cats =  torch.cat([g.ndata['emb'][src],g.ndata['emb'][dst]], 1)
     if args.dataset == 'B':
         emb_cats =  torch.cat([g.ndata['emb']['User'][src],g.ndata['emb']['Item'][dst]], 1)
-    time_pred = model.time_predict(emb_cats).int()
-    unix_time = dec_bits2int(time_pred*10).numpy()
-    pred = (unix_time >= start_at) & (unix_time <= end_at)
+    time_pred = model.time_predict(emb_cats).squeeze()
+    unix_time = (time_pred * (args.time_max - args.time_min) + args.time_min)
+    pred = (unix_time >= start_at) & (unix_time <= end_at).numpy()
     AUC = roc_auc_score(label,pred)
     print(f'AUC is {round(AUC,3)}')
 
