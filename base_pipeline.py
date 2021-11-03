@@ -13,7 +13,7 @@ def get_args():
     ### Argument and global variables
     parser = argparse.ArgumentParser('csv2DGLgraph')
     parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'B', help='Dataset name')
-    parser.add_argument("--lr", type=float, default=1e-2,help="learning rate")
+    parser.add_argument("--lr", type=float, default=1e-3,help="learning rate")
     parser.add_argument('--epochs', type=int, default = 500, help='Number of epochs')
     parser.add_argument("--emb_dim", type=int, default=16,help="number of hidden gnn units")
     parser.add_argument("--n_layers", type=int, default=2,help="number of hidden gnn layers")
@@ -97,6 +97,7 @@ def train(args, g):
     loss_values = []
 
     for i in range(args.epochs):
+        
         model.train()
         node_emb = model(g)
         loss = 0
@@ -108,12 +109,13 @@ def train(args, g):
             emb_cat = model.emb_concat(g, etype)
             time_pred = model.time_predict(emb_cat).squeeze()
             time_GT = g.edges[etype].data['ts']
-            loss += loss_fcn(time_pred, time_GT)
+            loss += loss_fcn(time_pred, time_GT)/len(g.etypes)
+            
                 
         loss_values.append(loss.item())
-        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        optimizer.zero_grad()
         print('Loss:', np.mean(loss_values))
         torch.cuda.empty_cache()
         # test every epoch
