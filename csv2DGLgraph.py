@@ -5,16 +5,7 @@ import argparse
 import torch
 import dgl
 import numpy as np
-#from memory_profiler import profile
 
-# data_path = 'toydata/'
-# if not os.path.exists(data_path + 'train.csv'):
-#     os.system('aws s3 cp s3://dgl-data/dataset/THG/toy/toy_train.csv toydata/train.csv')
-# if not os.path.exists(data_path + 'test.csv'):
-#     os.system('aws s3 cp s3://dgl-data/dataset/THG/toy/toy_test.csv toydata/test.csv')
-
-#train_csv = pd.read_csv(data_path + 'train.csv',header=None,delimiter='\t')
-#@profile
 def csv2graph(args):
     if args.dataset == 'A':
         src_type = 'Node'
