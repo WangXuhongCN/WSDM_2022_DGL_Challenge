@@ -158,8 +158,8 @@ def preprocess(args, directed_g):
 @torch.no_grad()
 def test(args, g, model):
     model.eval()
-    data_path = 'test_csvs/toy/'
-    test_csv = pd.read_csv(data_path + f'Dataset_{args.dataset}_test_toy.csv',delimiter='\t')
+    data_path = 'toy_testset/'
+    test_csv = pd.read_csv(data_path + f'Dataset_{args.dataset}_test_toy.csv')
     label = test_csv.exist.values
     src = test_csv.src.values
     dst = test_csv.dst.values
