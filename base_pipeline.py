@@ -15,7 +15,7 @@ def get_args():
     parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'B', help='Dataset name')
     parser.add_argument("--lr", type=float, default=1e-3,help="learning rate")
     parser.add_argument('--epochs', type=int, default = 500, help='Number of epochs')
-    parser.add_argument("--emb_dim", type=int, default=16,help="number of hidden gnn units")
+    parser.add_argument("--emb_dim", type=int, default=32,help="number of hidden gnn units")
     parser.add_argument("--n_layers", type=int, default=2,help="number of hidden gnn layers")
     parser.add_argument("--weight_decay", type=float, default=5e-4,help="Weight for L2 loss")
 
@@ -37,14 +37,17 @@ class hetero_conv(nn.Module):
         self.act = activation
         self.dropout = nn.Dropout(p=dropout, inplace=True)
         self.hconv_layers = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        for i in range(n_layers+1):
+            self.norms.append(nn.BatchNorm1d(hid_feats)) 
 
         # input layer
         self.hconv_layers.append(self.build_hconv(in_feats,hid_feats,activation=self.act))
         # hidden layers
         for i in range(n_layers - 1):
-            self.hconv_layers.append(self.build_hconv(hid_feats,hid_feats,activation=self.act))
+            self.hconv_layers.append(self.build_hconv(hid_feats,hid_feats,activation=self.act))   
         # output layer
-        self.hconv_layers.append(self.build_hconv(hid_feats,hid_feats)) # activation None
+        self.hconv_layers.append(self.build_hconv(hid_feats,hid_feats)) # activation None        
 
         self.fc1 = nn.Linear(hid_feats*2, hid_feats)
         self.fc2 = nn.Linear(hid_feats, 1)
@@ -61,6 +64,8 @@ class hetero_conv(nn.Module):
             h = {'Node':g.ndata[feat_key]}
         for i, layer in enumerate(self.hconv_layers):
             h = layer(g, h)
+            for key in h.keys():
+                h[key] = self.norms[i](h[key])
         return h
 
     def emb_concat(self, g, etype):
@@ -110,7 +115,6 @@ def train(args, g):
             time_pred = model.time_predict(emb_cat).squeeze()
             time_GT = g.edges[etype].data['ts']
             loss += loss_fcn(time_pred, time_GT)/len(g.etypes)
-            
                 
         loss_values.append(loss.item())
         loss.backward()
