@@ -8,6 +8,8 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+DGLgraphs/
+.ipynb
 build/
 develop-eggs/
 dist/

@@ -11,14 +11,13 @@ from sklearn.metrics import roc_auc_score
 
 def get_args():
     ### Argument and global variables
-    parser = argparse.ArgumentParser('csv2DGLgraph')
-    parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'B', help='Dataset name')
+    parser = argparse.ArgumentParser('Base')
+    parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'A', help='Dataset name')
     parser.add_argument("--lr", type=float, default=1e-3,help="learning rate")
     parser.add_argument('--epochs', type=int, default = 500, help='Number of epochs')
-    parser.add_argument("--emb_dim", type=int, default=32,help="number of hidden gnn units")
+    parser.add_argument("--emb_dim", type=int, default=16,help="number of hidden gnn units")
     parser.add_argument("--n_layers", type=int, default=2,help="number of hidden gnn layers")
     parser.add_argument("--weight_decay", type=float, default=5e-4,help="Weight for L2 loss")
-
 
     try:
         args = parser.parse_args()
@@ -27,9 +26,9 @@ def get_args():
         sys.exit(0)
     return args
 
-class hetero_conv(nn.Module):
+class HeteroConv(nn.Module):
     def __init__(self, etypes, n_layers, in_feats, hid_feats, activation, dropout=0.2):
-        super(hetero_conv, self).__init__()
+        super(HeteroConv, self).__init__()
         self.etypes = etypes
         self.n_layers = n_layers
         self.in_feats = in_feats
@@ -49,7 +48,7 @@ class hetero_conv(nn.Module):
         # output layer
         self.hconv_layers.append(self.build_hconv(hid_feats,hid_feats)) # activation None        
 
-        self.fc1 = nn.Linear(hid_feats*2, hid_feats)
+        self.fc1 = nn.Linear(hid_feats*2+10, hid_feats)
         self.fc2 = nn.Linear(hid_feats, 1)
     
     def build_hconv(self,in_feats,out_feats,activation=None):
@@ -75,15 +74,24 @@ class hetero_conv(nn.Module):
             g.apply_edges(cat, etype=etype)
             emb_cat = g.edges[etype].data['emb_cat']
         return emb_cat
-    
-    def time_predict(self, emb_cat):
-        h = self.dropout(emb_cat)
+
+    def int2dec_bits(self, x, bits=10): 
+        inp = x.repeat(10,1).transpose(0,1)
+        div = torch.cat([torch.ones((x.shape[0],1))*10**(bits-1-i) for i in range(bits)],1)
+        return (((inp/div).int()%10)*0.1).float()
+
+    def dec_bits2int(self, x, bits=10): 
+        div = torch.cat([torch.ones((x.shape[0],1))*10**(bits-1-i) for i in range(bits)],1)
+        return (10*x*div).sum(1)   
+        
+    def time_predict(self, node_emb_cat, time_emb):
+        h = torch.cat([node_emb_cat, time_emb], 1)
+        h = self.dropout(h)
         h = self.fc1(h)
         h = self.act(h)
         h = self.fc2(h)
         return h
     
-
 def train(args, g):
     if args.dataset == 'B':
         dim_nfeat = args.emb_dim*2 
@@ -92,13 +100,13 @@ def train(args, g):
     else:
         dim_nfeat = g.ndata['feat'].shape[1]
 
-    model = hetero_conv(g.etypes, args.n_layers, dim_nfeat, args.emb_dim, F.relu)
+    model = HeteroConv(g.etypes, args.n_layers, dim_nfeat, args.emb_dim, F.relu)
 
     optimizer = torch.optim.AdamW(model.parameters(),
                                  lr=args.lr,
                                  weight_decay=args.weight_decay)
-    #loss_fcn = nn.BCEWithLogitsLoss()  
-    loss_fcn = nn.SmoothL1Loss() 
+    loss_fcn = nn.BCEWithLogitsLoss()  
+    #loss_fcn = nn.L1Loss() 
     loss_values = []
 
     for i in range(args.epochs):
@@ -112,15 +120,27 @@ def train(args, g):
             if etype.split('_')[-1] == 'reversed':
                 continue
             emb_cat = model.emb_concat(g, etype)
-            time_pred = model.time_predict(emb_cat).squeeze()
-            time_GT = g.edges[etype].data['ts']
-            loss += loss_fcn(time_pred, time_GT)/len(g.etypes)
+            ts = g.edges[etype].data['ts']
+            idx = torch.randperm(ts.shape[0])
+            ts_shuffle = ts[idx]
+            neg_label = torch.zeros_like(ts)
+            neg_label[ts_shuffle>=ts] = 1
+
+            time_emb = model.int2dec_bits(ts) 
+            time_emb_shuffle = model.int2dec_bits(ts_shuffle) 
+
+            pos_exist_prob = model.time_predict(emb_cat, time_emb).squeeze()
+            neg_exist_prob = model.time_predict(emb_cat, time_emb_shuffle).squeeze()
+
+            probs = torch.cat([pos_exist_prob,neg_exist_prob],0)
+            label = torch.cat([torch.ones_like(neg_exist_prob),neg_label],0)
+            loss += loss_fcn(probs, label)/len(g.etypes)
                 
         loss_values.append(loss.item())
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        print('Loss:', np.mean(loss_values))
+        print('Loss:', loss_values[-1])
         torch.cuda.empty_cache()
         # test every epoch
         test(args, g, model)
@@ -138,25 +158,12 @@ def preprocess(args, directed_g):
             src_nodes_reversed = directed_g.edges(etype = (src_type, event_type, dst_type))[1]
             dst_nodes_reversed = directed_g.edges(etype = (src_type, event_type, dst_type))[0]
             graph_dict[(dst_type, event_type+'_reversed', src_type)] = (src_nodes_reversed,dst_nodes_reversed)
-            #ts_dict[canonical_etype] = g.edges[canonical_etype].data['ts']
         g = dgl.heterograph(graph_dict)
         for etype in g.etypes:
             g.edges[etype].data['ts'] = directed_g.edges[etype.split('_')[0]].data['ts']
             if 'feat' in directed_g.edges[etype.split('_')[0]].data.keys():
                 g.edges[etype].data['feat'] = directed_g.edges[etype.split('_')[0]].data['feat']
-
-    def timestamp_normlization(g):
-        time_min, time_max = [], []
-        for etype in g.etypes:
-            time_min.append(g.edges[etype].data['ts'].min().item())
-            time_max.append(g.edges[etype].data['ts'].max().item())
-        args.time_min = np.min(time_min).item()
-        args.time_max = np.max(time_max).item()
-        for etype in g.etypes:
-            g.edges[etype].data['ts'] = (g.edges[etype].data['ts'] - args.time_min) / (args.time_max - args.time_min)
-        return g
-
-    return timestamp_normlization(g)
+    return g
 
 @torch.no_grad()
 def test(args, g, model):
@@ -172,11 +179,15 @@ def test(args, g, model):
         emb_cats =  torch.cat([g.ndata['emb'][src],g.ndata['emb'][dst]], 1)
     if args.dataset == 'B':
         emb_cats =  torch.cat([g.ndata['emb']['User'][src],g.ndata['emb']['Item'][dst]], 1)
-    time_pred = model.time_predict(emb_cats).squeeze()
-    unix_time = (time_pred * (args.time_max - args.time_min) + args.time_min)
-    pred = (unix_time >= start_at) & (unix_time <= end_at).numpy()
-    AUC = roc_auc_score(label,pred)
-    print(f'AUC is {round(AUC,3)}')
+
+    start_time_emb = model.int2dec_bits(start_at)
+    end_time_emb = model.int2dec_bits(end_at)
+    start_prob = model.time_predict(emb_cats, start_time_emb).squeeze()
+    end_prob = model.time_predict(emb_cats, end_time_emb).squeeze()
+    exist_prob = end_prob - start_prob
+    
+    AUC = roc_auc_score(label,exist_prob)
+    print(f'AUC is {round(AUC,5)}')
 
 if __name__ == "__main__":
     args = get_args()
