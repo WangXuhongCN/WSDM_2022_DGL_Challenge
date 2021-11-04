@@ -1,4 +1,4 @@
-# WSDM_2022_DGL_Challenge
+# A Simple Baseline for WSDM 2022 Temporal Link Prediction Challenge
 https://www.dgl.ai/WSDM2022-Challenge/
 
 1. convert csv file to dgl.heterograph.
