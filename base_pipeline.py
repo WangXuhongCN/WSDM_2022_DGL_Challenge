@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# @Author  : Xuhong Wang
+# @Email  : wxuhong@amazon.com or wang_xuhong@sjtu.edu.cn
+# Feel free to send me an email if you have any question. 
+# You can also CC Quan Gan (quagan@amazon.com).
 import torch.nn.functional as F
 import torch
 import dgl
@@ -12,12 +18,12 @@ from sklearn.metrics import roc_auc_score
 def get_args():
     ### Argument and global variables
     parser = argparse.ArgumentParser('Base')
-    parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'A', help='Dataset name')
-    parser.add_argument("--lr", type=float, default=1e-3,help="learning rate")
-    parser.add_argument('--epochs', type=int, default = 500, help='Number of epochs')
-    parser.add_argument("--emb_dim", type=int, default=16,help="number of hidden gnn units")
-    parser.add_argument("--n_layers", type=int, default=2,help="number of hidden gnn layers")
-    parser.add_argument("--weight_decay", type=float, default=5e-4,help="Weight for L2 loss")
+    parser.add_argument('--dataset', type=str, choices=["A", "B"], default='A', help='Dataset name')
+    parser.add_argument("--lr", type=float, default=1e-3, help="learning rate")
+    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
+    parser.add_argument("--emb_dim", type=int, default=10, help="number of hidden gnn units")
+    parser.add_argument("--n_layers", type=int, default=2, help="number of hidden gnn layers")
+    parser.add_argument("--weight_decay", type=float, default=5e-4, help="Weight for L2 loss")
 
     try:
         args = parser.parse_args()
@@ -75,14 +81,15 @@ class HeteroConv(nn.Module):
             emb_cat = g.edges[etype].data['emb_cat']
         return emb_cat
 
-    def int2dec_bits(self, x, bits=10): 
+    def time_encoding(self, x, bits=10): 
+        '''
+        This function is designed to encode a unix timestamp to a 10-dim vector. 
+        And it is only one of the many options to encode timestamps.
+        Users can also define other time encoding methods such as Neural Network based ones.
+        '''
         inp = x.repeat(10,1).transpose(0,1)
         div = torch.cat([torch.ones((x.shape[0],1))*10**(bits-1-i) for i in range(bits)],1)
         return (((inp/div).int()%10)*0.1).float()
-
-    def dec_bits2int(self, x, bits=10): 
-        div = torch.cat([torch.ones((x.shape[0],1))*10**(bits-1-i) for i in range(bits)],1)
-        return (10*x*div).sum(1)   
         
     def time_predict(self, node_emb_cat, time_emb):
         h = torch.cat([node_emb_cat, time_emb], 1)
@@ -106,11 +113,9 @@ def train(args, g):
                                  lr=args.lr,
                                  weight_decay=args.weight_decay)
     loss_fcn = nn.BCEWithLogitsLoss()  
-    #loss_fcn = nn.L1Loss() 
     loss_values = []
 
     for i in range(args.epochs):
-        
         model.train()
         node_emb = model(g)
         loss = 0
@@ -118,6 +123,8 @@ def train(args, g):
             g.nodes[ntype].data['emb'] = node_emb[ntype]
         for i, etype in enumerate(g.etypes):
             if etype.split('_')[-1] == 'reversed':
+                # Etype that end with 'reversed' is the reverse edges we added for GNN message passing.
+                # So we do not need to compute loss in training.
                 continue
             emb_cat = model.emb_concat(g, etype)
             ts = g.edges[etype].data['ts']
@@ -126,14 +133,14 @@ def train(args, g):
             neg_label = torch.zeros_like(ts)
             neg_label[ts_shuffle>=ts] = 1
 
-            time_emb = model.int2dec_bits(ts) 
-            time_emb_shuffle = model.int2dec_bits(ts_shuffle) 
+            time_emb = model.time_encoding(ts) 
+            time_emb_shuffle = model.time_encoding(ts_shuffle) 
 
             pos_exist_prob = model.time_predict(emb_cat, time_emb).squeeze()
             neg_exist_prob = model.time_predict(emb_cat, time_emb_shuffle).squeeze()
 
             probs = torch.cat([pos_exist_prob,neg_exist_prob],0)
-            label = torch.cat([torch.ones_like(neg_exist_prob),neg_label],0)
+            label = torch.cat([torch.ones_like(ts),neg_label],0)
             loss += loss_fcn(probs, label)/len(g.etypes)
                 
         loss_values.append(loss.item())
@@ -148,7 +155,7 @@ def train(args, g):
     
     
 def preprocess(args, directed_g):
-    # add reverse edges for model computing
+    # this function is used to add reverse edges for model computing
     if args.dataset == 'A':
         g = dgl.add_reverse_edges(directed_g, copy_edata=True)
     if args.dataset == 'B':
@@ -180,8 +187,8 @@ def test(args, g, model):
     if args.dataset == 'B':
         emb_cats =  torch.cat([g.ndata['emb']['User'][src],g.ndata['emb']['Item'][dst]], 1)
 
-    start_time_emb = model.int2dec_bits(start_at)
-    end_time_emb = model.int2dec_bits(end_at)
+    start_time_emb = model.time_encoding(start_at)
+    end_time_emb = model.time_encoding(end_at)
     start_prob = model.time_predict(emb_cats, start_time_emb).squeeze()
     end_prob = model.time_predict(emb_cats, end_time_emb).squeeze()
     exist_prob = end_prob - start_prob
@@ -191,7 +198,11 @@ def test(args, g, model):
 
 if __name__ == "__main__":
     args = get_args()
-    g = dgl.load_graphs(f'DGLgraphs/Dataset_{args.dataset}.bin')[0][0]
+    if args.dataset == 'B':
+        g= dgl.load_graphs(f'DGLgraphs/Dataset_{args.dataset}.bin')[0][0]
+    elif args.dataset == 'A':
+        g, etype_feat = dgl.load_graphs(f'DGLgraphs/Dataset_{args.dataset}.bin')
+        g = g[0]
     g = preprocess(args, g)
     g, model = train(args,g)
     test(args, g, model)

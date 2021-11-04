@@ -9,7 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 DGLgraphs/
-.ipynb
+train_csvs/
+*.ipynb
 build/
 develop-eggs/
 dist/

@@ -32,27 +32,32 @@ def csv2graph(args):
 
 
     if args.dataset == 'A':
-        # Assign Node feature
+        # Assign Node feature in to graph
         node_feat_csv = pd.read_csv('train_csvs/node_features.csv',header=None)
         node_feat = node_feat_csv.values[:,1:]
         node_idx = node_feat_csv.values[:,0]
         g.nodes[src_type].data['feat'] = torch.zeros((g.number_of_nodes(src_type), 8))
         g.nodes[src_type].data['feat'][node_idx] = torch.FloatTensor(node_feat)
         
-        # Assign Edge Type Feature
+        # Assign Edge Type Feature as the graph`s label, which can be saved along with dgl.heterograph
         etype_feat_csv = pd.read_csv('train_csvs/edge_type_features.csv',header=None)
-        etype_feat = torch.FloatTensor(etype_feat_csv.values[:,1:])
-        for etype in g.etypes:
-            g.edges[etype].data['type_feat'] = etype_feat[int(etype)].repeat(g.num_edges(etype),1)
+        etype_feat_tensor = torch.FloatTensor(etype_feat_csv.values[:,1:])
+        etype_feat = {}
+        for i,etype in enumerate(g.etypes):
+            etype_feat[etype] = etype_feat_tensor[i]
+
+        dgl.save_graphs(f"./DGLgraphs/Dataset_{args.dataset}.bin", g, etype_feat)
 
     if args.dataset == 'B':
+        etype_feat = None
         # Assign Edge Feature
         for event_type, records in heterogenous_group:
             event_type = str(event_type)
             etype = (src_type, event_type, dst_type)
             if len(str(records[4].iloc[0])) > 3:
                 g.edges[etype].data['feat'] = (extract_edge_feature(records[4]))
-    return g
+        dgl.save_graphs(f"./DGLgraphs/Dataset_{args.dataset}.bin", g)   
+
     
 
 def extract_edge_feature(records):
@@ -74,7 +79,7 @@ def extract_edge_feature(records):
 def get_args():
     ### Argument and global variables
     parser = argparse.ArgumentParser('csv2DGLgraph')
-    parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'B', help='Dataset name')
+    parser.add_argument('--dataset', type=str, choices=["A", "B"], default = 'A', help='Dataset name')
     try:
         args = parser.parse_args()
     except:
@@ -85,10 +90,11 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/edges_train_A.csv.gz')
-    os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/node_features.csv.gz')
-    os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/edge_type_features.csv.gz')
-    os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/edges_train_B.csv.gz')
-    os.system('gzip -d train_csvs/*.gz')
-    g = csv2graph(args)
-    dgl.save_graphs(f"./DGLgraphs/Dataset_{args.dataset}.bin", g)
+    if not os.path.exists('train_csvs/'):
+        os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/edges_train_A.csv.gz')
+        os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/node_features.csv.gz')
+        os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/edge_type_features.csv.gz')
+        os.system('wget -P train_csvs https://data.dgl.ai/dataset/WSDMCup2022/edges_train_B.csv.gz')
+        os.system('gzip -d train_csvs/*.gz')
+    csv2graph(args)
+    
